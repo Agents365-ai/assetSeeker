@@ -114,12 +114,24 @@ SOURCE_CONFIG = {
         "scraper": True,
         "pip_deps": ["playwright"],
     },
+    "undraw": {
+        "label": "unDraw (Playwright scraper)",
+        "types": ["illustration"],
+        "base": "https://undraw.co",
+        "env_key": None,
+        "free_tier": "Free, no attribution (use --source undraw)",
+        "china_access": True,
+        "license": "No attribution required",
+        "scraper": True,
+        "pip_deps": ["playwright"],
+    },
 }
 
 # Maps user-facing type -> list of source names in priority order
 TYPE_TO_SOURCES: dict[str, list[str]] = {
     "photo": ["pexels", "unsplash", "pixabay"],
     "icon": ["iconify", "noun-project"],
+    "illustration": ["undraw"],
     "video": ["pexels", "pixabay"],
     "sfx": ["freesound"],
     "music": ["freesound"],
@@ -609,6 +621,88 @@ def _search_mixkit(args: argparse.Namespace) -> list[dict]:
     return results
 
 
+def _search_undraw(args: argparse.Namespace) -> list[dict]:
+    """Search unDraw for SVG illustrations via Playwright scraper."""
+    if not HAS_PLAYWRIGHT:
+        return [{"error": "Playwright not installed. Run: pip install playwright && python -m playwright install chromium"}]
+
+    keyword = (args.keyword or "").strip().lower()
+    accent_color = getattr(args, "color", None)  # optional hex color for recoloring
+
+    results: list[dict] = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto("https://undraw.co/illustrations", timeout=20000)
+            page.wait_for_timeout(4000)
+
+            buttons = page.query_selector_all(".appcontainer button")
+            for btn in buttons:
+                try:
+                    svg = btn.query_selector("svg")
+                    if not svg:
+                        continue
+                    w_str = svg.get_attribute("width") or "0"
+                    try:
+                        if float(w_str) < 100:
+                            continue  # skip tiny UI icons
+                    except ValueError:
+                        continue
+
+                    title = (btn.inner_text() or "").strip()
+                    if not title:
+                        continue
+
+                    # Filter by keyword
+                    if keyword and keyword not in title.lower():
+                        continue
+
+                    # Extract full SVG markup
+                    svg_html = page.evaluate("el => el.outerHTML", svg)
+                    if not svg_html:
+                        continue
+
+                    # Recolor if requested: replace the most prominent accent fill
+                    if accent_color:
+                        # Find all hex colors and replace the first non-gray one
+                        base_color = "#6c63ff"  # unDraw default accent
+                        alt_colors = re.findall(r"#[0-9a-fA-F]{6}", svg_html)
+                        # Use the most frequent non-gray color as the accent
+                        from collections import Counter
+                        color_counts = Counter(c for c in alt_colors if c.lower() not in ("#ffffff", "#000000", "#090814", "#f2f2f2", "#e6e6e6", "#d6d6e3"))
+                        if color_counts:
+                            base_color = color_counts.most_common(1)[0][0]
+                        svg_html = svg_html.replace(base_color, f"#{accent_color.lstrip('#')}")
+
+                    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+                    results.append({
+                        "id": slug,
+                        "source": "undraw",
+                        "type": "illustration",
+                        "title": title,
+                        "url": f"https://undraw.co/illustrations",
+                        "svg": svg_html,
+                        "svg_bytes": len(svg_html),
+                        "download_url": f"https://undraw.co/illustrations",  # no direct URL; save SVG locally
+                        "color_hint": "Use --color HEX to change the accent color",
+                    })
+
+                    if len(results) >= args.max_results:
+                        break
+                except Exception:
+                    continue
+
+            browser.close()
+    except Exception as e:
+        return [{"error": f"unDraw scraper failed: {e}"}]
+
+    if not results:
+        return [{"error": f"No unDraw illustrations matching '{keyword}' (searched 40 total)"}]
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -622,6 +716,7 @@ SEARCHERS = {
     "google-fonts": _search_google_fonts,
     "noun-project": _search_noun_project,
     "mixkit": _search_mixkit,
+    "undraw": _search_undraw,
 }
 
 
@@ -803,6 +898,10 @@ def _print_search_text(keyword: str, asset_type: str, all_results: dict[str, lis
                 print(f"  {i}. {r.get('family', '')} ({r.get('category', '')})")
                 print(f"     Variants: {', '.join(r.get('variants', []))}")
                 print(f"     CSS: {r.get('css_link', '')}")
+            elif asset_type == "illustration":
+                print(f"  {i}. {r.get('title', '')}")
+                print(f"     SVG: {r.get('svg_bytes', 0)} bytes")
+                print(f"     {r.get('color_hint', '')}")
         print()
 
 
