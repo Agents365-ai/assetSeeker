@@ -22,7 +22,16 @@ import urllib.request
 import urllib.parse
 import urllib.error
 from pathlib import Path
+import re
 from typing import Any
+
+# Playwright is optional — only needed for scraper sources (Mixkit etc.)
+try:
+    from playwright.sync_api import sync_playwright  # noqa: F401
+    HAS_PLAYWRIGHT = True
+except ImportError:
+    sync_playwright = None  # type: ignore[assignment]
+    HAS_PLAYWRIGHT = False
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -93,6 +102,17 @@ SOURCE_CONFIG = {
         "free_tier": "5,000/month",
         "china_access": True,
         "license": "Per-icon license",
+    },
+    "mixkit": {
+        "label": "Mixkit (Playwright scraper)",
+        "types": ["video", "sfx", "music", "template"],
+        "base": "https://mixkit.co",
+        "env_key": None,
+        "free_tier": "Free, no attribution (use --source mixkit)",
+        "china_access": True,
+        "license": "No attribution required",
+        "scraper": True,
+        "pip_deps": ["playwright"],
     },
 }
 
@@ -505,6 +525,90 @@ def _search_noun_project(args: argparse.Namespace) -> list[dict]:
     }]
 
 
+def _search_mixkit(args: argparse.Namespace) -> list[dict]:
+    """Search Mixkit for video footage via Playwright scraper."""
+    if not HAS_PLAYWRIGHT:
+        return [{"error": "Playwright not installed. Run: pip install playwright && python -m playwright install chromium"}]
+
+    keyword = args.keyword.strip()
+    asset_type = args.type
+
+    # Map asset type to Mixkit URL path
+    type_paths = {
+        "video": "free-stock-video",
+        "sfx": "free-sound-effects",
+        "music": "free-stock-music",
+        "template": "free-video-templates",
+    }
+    path = type_paths.get(asset_type, "free-stock-video")
+    base_url = f"https://mixkit.co/{path}/"
+
+    results: list[dict] = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(base_url, timeout=20000)
+            page.wait_for_timeout(2000)
+
+            # Use the search form (URL param ?s= does not trigger JS search)
+            search_input = page.query_selector('input[type="search"], input[placeholder*="search" i], [class*=search] input[type="text"]')
+            if search_input:
+                search_input.fill(keyword)
+                search_input.press("Enter")
+                page.wait_for_timeout(4000)
+            else:
+                # Fallback: try URL-based search
+                page.goto(f"{base_url}?s={urllib.parse.quote(keyword)}", timeout=20000)
+                page.wait_for_timeout(4000)
+
+            cards = page.query_selector_all(".item-grid__item")
+            for card in cards[:args.max_results]:
+                try:
+                    link_el = card.query_selector(".item-grid-video-player__overlay-link")
+                    if not link_el:
+                        continue
+                    href = link_el.get_attribute("href") or ""
+                    title = (link_el.inner_text() or "").strip()
+
+                    img_el = card.query_selector(".item-grid-video-player img")
+                    thumbnail = img_el.get_attribute("src") if img_el else ""
+
+                    # Extract video ID from href: /free-stock-video/slug-12345/
+                    m = re.search(r"-(\d+)/?$", href)
+                    vid = m.group(1) if m else ""
+
+                    result: dict = {
+                        "id": vid,
+                        "source": "mixkit",
+                        "type": asset_type,
+                        "title": title,
+                        "url": f"https://mixkit.co{href}" if href.startswith("/") else href,
+                        "thumbnail": thumbnail,
+                        "license": "No attribution required",
+                    }
+
+                    if asset_type == "video" and vid:
+                        result["download_url"] = f"https://assets.mixkit.co/videos/{vid}/{vid}-720.mp4"
+                        result["download_urls"] = {
+                            "360p": f"https://assets.mixkit.co/videos/{vid}/{vid}-360.mp4",
+                            "720p": f"https://assets.mixkit.co/videos/{vid}/{vid}-720.mp4",
+                        }
+
+                    if title:
+                        results.append(result)
+                except Exception:
+                    continue
+
+            browser.close()
+    except Exception as e:
+        return [{"error": f"Mixkit scraper failed: {e}", "hint": "Try again or use --source pexels for video search"}]
+
+    if not results:
+        return [{"error": f"No Mixkit {asset_type} results for '{keyword}'"}]
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -517,6 +621,7 @@ SEARCHERS = {
     "freesound": _search_freesound,
     "google-fonts": _search_google_fonts,
     "noun-project": _search_noun_project,
+    "mixkit": _search_mixkit,
 }
 
 
@@ -541,9 +646,11 @@ def _source_status() -> dict[str, dict]:
     status: dict[str, dict] = {}
     for name, conf in SOURCE_CONFIG.items():
         env = conf.get("env_key")
-        always_avail = conf.get("always_available") or env is None
+        always_avail = conf.get("always_available") or (env is None and not conf.get("scraper"))
         if always_avail:
             has = True
+        elif conf.get("scraper"):
+            has = "scraper"  # Playwright-based, always usable when Playwright installed
         elif env:
             has = bool(os.environ.get(env))
         else:
@@ -667,10 +774,22 @@ def _print_search_text(keyword: str, asset_type: str, all_results: dict[str, lis
                 print(f"     Preview: {r.get('preview', '')[:100]}")
                 print(f"     Download: {r.get('download_url', '')[:100]}")
             elif asset_type == "video":
-                dur = r.get("duration", 0)
-                print(f"  {i}. {r.get('url', '')[:80]}")
-                print(f"     {r.get('width')}×{r.get('height')} | {dur:.0f}s | by {r.get('photographer') or r.get('user', '')}")
-                print(f"     Download: {r.get('download_url', '')[:100]}")
+                dur = r.get("duration", 0) or 0
+                title = r.get("title") or r.get("alt", "")
+                res = f"{r.get('width')}×{r.get('height')}" if r.get("width") else ""
+                dur_str = f" | {dur:.0f}s" if dur else ""
+                author = f" | by {r.get('photographer') or r.get('user', '')}" if r.get("photographer") or r.get("user") else ""
+                print(f"  {i}. {title[:60]}")
+                print(f"     {r.get('url', '')[:80]}")
+                if res or dur:
+                    print(f"     {res}{dur_str}{author}")
+                # Show multi-quality download options
+                dl_urls = r.get("download_urls", {})
+                if dl_urls:
+                    for quality, url in dl_urls.items():
+                        print(f"     [{quality}] {url[:100]}")
+                else:
+                    print(f"     Download: {r.get('download_url', '')[:100]}")
             elif asset_type == "icon":
                 print(f"  {i}. {r.get('id', '')} [{r.get('collection_name', '')}]")
                 print(f"     SVG: {r.get('svg_url', '')}")
