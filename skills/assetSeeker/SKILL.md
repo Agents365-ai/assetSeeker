@@ -63,8 +63,8 @@ Do NOT use for: local file search, video editing, or asset management tools (Eag
 |--------|-----|-----------|-------------|
 | **Pexels Video** (default) | ✅ | 200 req/hr, 20k/month | ✅ Direct |
 | **Pixabay Video** | ✅ | Free | ✅ Direct |
+| **Mixkit** | 🎭 Playwright scraper | Free, no attribution | ✅ Direct |
 | **Coverr** | ✅ | Needs application | ✅ Direct |
-| **Mixkit** | ❌ | Free direct download | ✅ Direct |
 
 ### Music & Sound Effects
 
@@ -112,8 +112,11 @@ python3 "${SKILL_DIR}/scripts/seek_assets.py" search photo "mountain sunset"
 # Icon search (Iconify — always works, no key needed)
 python3 "${SKILL_DIR}/scripts/seek_assets.py" search icon "laptop"
 
-# Video search
+# Video search (via Pexels API)
 python3 "${SKILL_DIR}/scripts/seek_assets.py" search video "city traffic"
+
+# Video search (via Mixkit Playwright scraper — no API key needed)
+python3 "${SKILL_DIR}/scripts/seek_assets.py" search video "sunset" --source mixkit
 
 # Sound effect search
 python3 "${SKILL_DIR}/scripts/seek_assets.py" search sfx "whoosh"
@@ -221,7 +224,11 @@ export NOUN_PROJECT_SECRET="your-noun-project-secret"
 ## Requirements
 
 ```bash
+# Core (stdlib, no pip needed for photos/icons/fonts)
 pip install requests
+
+# Optional: for Mixkit Playwright scraper
+pip install playwright && python -m playwright install chromium
 ```
 
 ## Manual Sources (no API — agent provides direct guidance)
