@@ -136,13 +136,24 @@ SOURCE_CONFIG = {
         "scraper": True,
         "pip_deps": ["playwright"],
     },
+    "storyset": {
+        "label": "Storyset (Playwright scraper)",
+        "types": ["illustration"],
+        "base": "https://storyset.com",
+        "env_key": None,
+        "free_tier": "Free, editable illustrations (use --source storyset)",
+        "china_access": True,
+        "license": "Free with attribution (Freepik license)",
+        "scraper": True,
+        "pip_deps": ["playwright"],
+    },
 }
 
 # Maps user-facing type -> list of source names in priority order
 TYPE_TO_SOURCES: dict[str, list[str]] = {
     "photo": ["pexels", "unsplash", "pixabay"],
     "icon": ["iconify", "noun-project"],
-    "illustration": ["undraw"],
+    "illustration": [],
     "video": ["pexels", "pixabay"],
     "sfx": ["freesound"],
     "music": ["freesound"],
@@ -809,6 +820,72 @@ def _search_100font(args: argparse.Namespace) -> list[dict]:
     return results
 
 
+def _search_storyset(args: argparse.Namespace) -> list[dict]:
+    """Search Storyset for editable illustrations via Playwright."""
+    if not HAS_PLAYWRIGHT:
+        return [{"error": "Playwright not installed. Run: pip install playwright && python -m playwright install chromium"}]
+
+    keyword = args.keyword.strip()
+    search_url = f"https://storyset.com/search?q={urllib.parse.quote(keyword)}"
+
+    results: list[dict] = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1440, "height": 900})
+            page.goto(search_url, timeout=20000)
+            page.wait_for_timeout(4000)
+
+            links = page.query_selector_all('a[href*="/illustration/"]')
+            seen_names: set[str] = set()
+            for link in links:
+                href = link.get_attribute("href") or ""
+                parts = href.strip("/").split("/")
+                if len(parts) < 2:
+                    continue
+                name, style = parts[-2], parts[-1]
+
+                # Deduplicate — each illustration has 5 style variants, keep first
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+
+                title = name.replace("-", " ").title()
+
+                # Find thumbnail image
+                img = link.query_selector("img")
+                thumbnail = img.get_attribute("src") if img else ""
+
+                # Storyset style URLs
+                styles = ["rafiki", "bro", "amico", "pana", "cuate"]
+                style_urls = {
+                    s: f"https://storyset.com/illustration/{name}/{s}"
+                    for s in styles
+                }
+
+                results.append({
+                    "id": name,
+                    "source": "storyset",
+                    "type": "illustration",
+                    "title": title,
+                    "url": f"https://storyset.com{href}",
+                    "thumbnail": thumbnail,
+                    "styles": style_urls,
+                    "license": "Free with attribution (Freepik license)",
+                })
+
+                if len(results) >= args.max_results:
+                    break
+
+            browser.close()
+    except Exception as e:
+        return [{"error": f"Storyset scraper failed: {e}"}]
+
+    if not results:
+        return [{"error": f"No Storyset illustrations matching '{keyword}'"}]
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -824,6 +901,7 @@ SEARCHERS = {
     "mixkit": _search_mixkit,
     "undraw": _search_undraw,
     "100font": _search_100font,
+    "storyset": _search_storyset,
 }
 
 
@@ -1020,9 +1098,15 @@ def _print_search_text(keyword: str, asset_type: str, all_results: dict[str, lis
                         for du in dl_urls:
                             print(f"     Download: {du}")
             elif asset_type == "illustration":
-                print(f"  {i}. {r.get('title', '')}")
-                print(f"     SVG: {r.get('svg_bytes', 0)} bytes")
-                print(f"     {r.get('color_hint', '')}")
+                title = r.get('title', '')
+                source = r.get('source', '')
+                print(f"  {i}. {title}")
+                if r.get("svg_bytes"):
+                    print(f"     SVG: {r.get('svg_bytes', 0)} bytes | {r.get('color_hint', '')}")
+                if r.get("styles"):
+                    styles = ', '.join(r["styles"].keys())
+                    print(f"     Styles: {styles} | License: {r.get('license', '')}")
+                print(f"     URL: {r.get('url', '')}")
         print()
 
 
