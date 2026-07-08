@@ -80,9 +80,10 @@ SOURCE_CONFIG = {
         "types": ["font"],
         "base": "https://www.googleapis.com/webfonts/v1",
         "env_key": "GOOGLE_FONTS_API_KEY",
-        "free_tier": "Free",
+        "free_tier": "Free (or offline index — no key needed)",
         "china_access": True,
         "license": "OFL (Open Font License)",
+        "always_available": True,  # Has local offline index fallback
     },
     "noun-project": {
         "label": "Noun Project",
@@ -383,11 +384,18 @@ def _search_freesound(args: argparse.Namespace) -> list[dict]:
 
 
 def _search_google_fonts(args: argparse.Namespace) -> list[dict]:
-    """Search Google Fonts."""
+    """Search Google Fonts — uses local offline index, or API if key is set."""
     key = _get_key("google-fonts")
-    if not key:
-        return [{"error": "GOOGLE_FONTS_API_KEY not set. Get one at https://console.cloud.google.com/"}]
 
+    if key:
+        return _search_google_fonts_api(args, key)
+
+    # Fall back to local offline index (no key needed)
+    return _search_google_fonts_local(args)
+
+
+def _search_google_fonts_api(args: argparse.Namespace, key: str) -> list[dict]:
+    """Search via Google Fonts API (needs API key)."""
     url = f"https://www.googleapis.com/webfonts/v1/webfonts?key={key}&sort=popularity"
     data = _api_get(url)
     if "error" in data:
@@ -395,8 +403,6 @@ def _search_google_fonts(args: argparse.Namespace) -> list[dict]:
 
     keyword = args.keyword.lower()
     items = data.get("items", [])
-
-    # Filter by keyword match in family name or category
     matched: list[dict] = []
     for f in items:
         family = f.get("family", "").lower()
@@ -418,8 +424,67 @@ def _search_google_fonts(args: argparse.Namespace) -> list[dict]:
             })
         if len(matched) >= args.max_results:
             break
-
     return matched
+
+
+def _search_google_fonts_local(args: argparse.Namespace) -> list[dict]:
+    """Search from a pre-built local index of 1940 Google Fonts families."""
+    # Locate index relative to this script
+    script_dir = Path(__file__).resolve().parent
+    index_path = script_dir.parent / "references" / "google_fonts_index.json"
+
+    if not index_path.is_file():
+        return [{"error": "Font index not found. Set GOOGLE_FONTS_API_KEY for live search."}]
+
+    try:
+        fonts = json.loads(index_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as e:
+        return [{"error": f"Failed to load font index: {e}"}]
+
+    keyword = args.keyword.lower().strip()
+    matched: list[dict] = []
+
+    # Score: exact family match > family starts with keyword > word in family > substring > category
+    for f in fonts:
+        family = f.get("family", "")
+        family_lower = family.lower()
+        category = (f.get("category", "") or "").lower()
+        variants = f.get("variants", [])
+
+        score = 0
+        if keyword == family_lower:
+            score = 100
+        elif family_lower.startswith(keyword):
+            score = 80
+        elif f" {keyword}" in family_lower or f"{keyword} " in family_lower:
+            score = 60
+        elif keyword in family_lower:
+            score = 40
+        elif keyword in category:
+            score = 10
+        else:
+            continue
+
+        matched.append({
+            "family": f.get("family"),
+            "source": "google-fonts",
+            "type": "font",
+            "category": f.get("category", ""),
+            "variants": variants,
+            "variants_count": len(variants),
+            "subsets": f.get("subsets", []),
+            "designers": f.get("designers", []),
+            "last_modified": f.get("lastModified", ""),
+            "css_link": f"https://fonts.googleapis.com/css2?family={urllib.parse.quote(f.get('family', '').replace(' ', '+'))}",
+            "_score": score,
+        })
+
+    # Sort by internal score descending, then take top N
+    matched.sort(key=lambda f: f.get("_score", 0), reverse=True)
+    # Strip internal scoring field from output
+    for m in matched:
+        m.pop("_score", None)
+    return matched[:args.max_results]
 
 
 def _search_noun_project(args: argparse.Namespace) -> list[dict]:
@@ -463,8 +528,8 @@ def _available_sources(asset_type: str) -> list[str]:
     available: list[str] = []
     for src in candidates:
         conf = SOURCE_CONFIG.get(src, {})
-        if conf.get("env_key") is None:
-            # No key needed — always available
+        if conf.get("always_available") or conf.get("env_key") is None:
+            # Local fallback or no key needed — always available
             available.append(src)
         elif _get_key(src):
             available.append(src)
@@ -476,10 +541,13 @@ def _source_status() -> dict[str, dict]:
     status: dict[str, dict] = {}
     for name, conf in SOURCE_CONFIG.items():
         env = conf.get("env_key")
-        if env:
+        always_avail = conf.get("always_available") or env is None
+        if always_avail:
+            has = True
+        elif env:
             has = bool(os.environ.get(env))
         else:
-            has = True  # no key needed
+            has = False
         status[name] = {
             "label": conf["label"],
             "types": conf["types"],
