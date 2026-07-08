@@ -125,6 +125,17 @@ SOURCE_CONFIG = {
         "scraper": True,
         "pip_deps": ["playwright"],
     },
+    "100font": {
+        "label": "100font (Playwright scraper)",
+        "types": ["font"],
+        "base": "https://www.100font.com",
+        "env_key": None,
+        "free_tier": "Free, 820+ verified fonts (use --source 100font)",
+        "china_access": True,
+        "license": "Varies per font (mostly OFL / free commercial)",
+        "scraper": True,
+        "pip_deps": ["playwright"],
+    },
 }
 
 # Maps user-facing type -> list of source names in priority order
@@ -703,6 +714,101 @@ def _search_undraw(args: argparse.Namespace) -> list[dict]:
     return results
 
 
+def _search_100font(args: argparse.Namespace) -> list[dict]:
+    """Search 100font.com for Chinese free commercial-use fonts via Playwright."""
+    if not HAS_PLAYWRIGHT:
+        return [{"error": "Playwright not installed. Run: pip install playwright && python -m playwright install chromium"}]
+
+    keyword = args.keyword.strip()
+    base_url = "https://www.100font.com"
+
+    results: list[dict] = []
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+
+            # Search
+            page.goto(base_url, timeout=15000)
+            page.wait_for_timeout(2000)
+            search_input = page.query_selector('input[placeholder*="字体"]')
+            if search_input:
+                search_input.fill(keyword)
+                search_input.press("Enter")
+                page.wait_for_timeout(3000)
+            else:
+                page.goto(f"{base_url}/search.htm?keyword={urllib.parse.quote(keyword)}", timeout=15000)
+                page.wait_for_timeout(3000)
+
+            # Extract thread items from search results
+            thread_links = page.query_selector_all('a[href*="thread-"]')
+            seen: set[str] = set()
+            for link in thread_links:
+                try:
+                    href = link.get_attribute("href") or ""
+                    if not href.startswith("thread-"):
+                        continue
+                    if href in seen:
+                        continue
+                    seen.add(href)
+
+                    title = (link.inner_text() or "").strip()
+                    if not title or len(title) < 4:
+                        continue
+                    # Skip FAQ/articles — font listings start with 【
+                    if not title.startswith("【"):
+                        continue
+
+                    # Extract tags from title (e.g., "简体 繁体 宋体 时尚 OFL")
+                    tags = re.findall(r"[一-鿿\w]+", title.split("】")[-1]) if "】" in title else []
+
+                    results.append({
+                        "id": href.replace("thread-", "").replace(".htm", ""),
+                        "source": "100font",
+                        "type": "font",
+                        "family": title.split("】")[0].lstrip("【") if "】" in title else title,
+                        "title": title,
+                        "url": f"{base_url}/{href}",
+                        "tags": tags[:8],
+                        "license_hint": "OFL" if "OFL" in title else "Check thread page",
+                    })
+
+                    if len(results) >= args.max_results:
+                        break
+                except Exception:
+                    continue
+
+            # If user wants detailed download info, visit the first result's page
+            if results and getattr(args, "detail", False):
+                for r in results[:3]:  # Only fetch detail for top 3
+                    try:
+                        page.goto(r["url"], timeout=10000)
+                        page.wait_for_timeout(1500)
+                        all_links = page.query_selector_all("a")
+                        for l in all_links:
+                            href = l.get_attribute("href") or ""
+                            for host in ["pan.quark.cn", "pan.baidu.com", "lanzou", "aliyundrive", "123pan"]:
+                                if host in href:
+                                    r.setdefault("download_urls", []).append(href)
+                        # Get license info
+                        body = (page.inner_text("body") or "")[:2000]
+                        lic_match = re.search(r"(SIL Open Font License[\s\S]{0,100})", body)
+                        if lic_match:
+                            r["license"] = lic_match.group(1).strip()[:120]
+                    except Exception:
+                        continue
+                # Go back to results list for consistency
+                # (results page no longer valid after navigation, but we already have data)
+
+            browser.close()
+    except Exception as e:
+        return [{"error": f"100font scraper failed: {e}"}]
+
+    if not results:
+        return [{"error": f"No 100font fonts matching '{keyword}'"}]
+    return results
+
+
 # ---------------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------------
@@ -717,6 +823,7 @@ SEARCHERS = {
     "noun-project": _search_noun_project,
     "mixkit": _search_mixkit,
     "undraw": _search_undraw,
+    "100font": _search_100font,
 }
 
 
@@ -895,9 +1002,23 @@ def _print_search_text(keyword: str, asset_type: str, all_results: dict[str, lis
                 print(f"     License: {r.get('license', '')} | by {r.get('username', '')}")
                 print(f"     Preview: {r.get('preview_url', '')[:100]}")
             elif asset_type == "font":
-                print(f"  {i}. {r.get('family', '')} ({r.get('category', '')})")
-                print(f"     Variants: {', '.join(r.get('variants', []))}")
-                print(f"     CSS: {r.get('css_link', '')}")
+                # Google Fonts format
+                if r.get("category"):
+                    print(f"  {i}. {r.get('family', '')} ({r.get('category', '')})")
+                    print(f"     Variants: {', '.join(r.get('variants', []))}")
+                    print(f"     CSS: {r.get('css_link', '')}")
+                # 100font format
+                else:
+                    title = r.get('title', '') or r.get('family', '')
+                    tags = ', '.join(r.get('tags', []))
+                    print(f"  {i}. {title}")
+                    if tags:
+                        print(f"     Tags: {tags}")
+                    print(f"     Page: {r.get('url', '')}")
+                    dl_urls = r.get('download_urls', [])
+                    if dl_urls:
+                        for du in dl_urls:
+                            print(f"     Download: {du}")
             elif asset_type == "illustration":
                 print(f"  {i}. {r.get('title', '')}")
                 print(f"     SVG: {r.get('svg_bytes', 0)} bytes")
