@@ -33,6 +33,14 @@ except ImportError:
     sync_playwright = None  # type: ignore[assignment]
     HAS_PLAYWRIGHT = False
 
+# For OAuth2 flow (Freesound auth)
+import hashlib
+import http.server
+import secrets
+import threading
+import webbrowser
+from urllib.parse import parse_qs, urlparse
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -79,10 +87,11 @@ SOURCE_CONFIG = {
         "label": "Freesound",
         "types": ["sfx", "music"],
         "base": "https://freesound.org/apiv2",
-        "env_key": "FREESOUND_API_KEY",
+        "env_key": "FREESOUND_API_KEY",  # client_id; FREESOUND_TOKEN is the actual auth token
         "free_tier": "Free with OAuth token",
         "china_access": True,
         "license": "Check per item (mostly CC0 / CC-BY)",
+        "oauth": True,  # Uses OAuth2 — check for token, not just key
     },
     "google-fonts": {
         "label": "Google Fonts",
@@ -401,10 +410,10 @@ def _search_iconify(args: argparse.Namespace) -> list[dict]:
 def _search_freesound(args: argparse.Namespace) -> list[dict]:
     """Search Freesound for SFX or music."""
     key = _get_key("freesound")
-    if not key:
-        return [{"error": "FREESOUND_API_KEY not set. Get one at https://freesound.org/apiv2/apply/"}]
+    token = os.environ.get("FREESOUND_TOKEN", "")
+    if not key and not token:
+        return [{"error": "Set FREESOUND_API_KEY or FREESOUND_TOKEN. Run: seek_assets.py auth freesound"}]
 
-    token = os.environ.get("FREESOUND_TOKEN", key)
     auth_header = f"Bearer {token}" if token else f"Token {key}"
     url = f"https://freesound.org/apiv2/search/text/?query={urllib.parse.quote(args.keyword)}&page_size={min(args.max_results, 30)}&fields=id,name,url,previews,license,username,duration,download,tags"
 
@@ -916,6 +925,11 @@ def _available_sources(asset_type: str) -> list[str]:
         if conf.get("always_available") or conf.get("env_key") is None:
             # Local fallback or no key needed — always available
             available.append(src)
+        elif conf.get("oauth"):
+            # OAuth2 source — need either the key or the token
+            env = conf.get("env_key", "")
+            if env and (_get_key(src) or os.environ.get("FREESOUND_TOKEN")):
+                available.append(src)
         elif _get_key(src):
             available.append(src)
     return available
@@ -1110,6 +1124,70 @@ def _print_search_text(keyword: str, asset_type: str, all_results: dict[str, lis
         print()
 
 
+def cmd_auth(args: argparse.Namespace) -> None:
+    """Run OAuth2 flow for a source (currently supports Freesound)."""
+    if args.source != "freesound":
+        print(json.dumps({"error": f"OAuth not supported for '{args.source}'. Only 'freesound'."}))
+        sys.exit(1)
+
+    client_id = os.environ.get("FREESOUND_API_KEY", "")
+    if not client_id:
+        print(json.dumps({"error": "Set FREESOUND_API_KEY (your Freesound client_id) first."}))
+        sys.exit(1)
+
+    state = secrets.token_urlsafe(16)
+
+    auth_url = (
+        f"https://freesound.org/apiv2/oauth2/authorize/?"
+        f"client_id={urllib.parse.quote(client_id)}"
+        f"&response_type=code"
+        f"&state={state}"
+    )
+
+    print(f"Opening browser for Freesound authorization...", file=sys.stderr)
+    webbrowser.open(auth_url)
+
+    print("\nAfter authorizing, Freesound will redirect you. Check the browser URL bar.", file=sys.stderr)
+    print('Look for "code=" in the URL and copy the value after it.', file=sys.stderr)
+    code = input("\nPaste authorization code: ").strip()
+    if not code:
+        print(json.dumps({"error": "No code provided."}))
+        sys.exit(1)
+
+    # Exchange code for access token
+    token_url = "https://freesound.org/apiv2/oauth2/access_token/"
+    data = urllib.parse.urlencode({
+        "client_id": client_id,
+        "grant_type": "authorization_code",
+        "code": code,
+    }).encode("utf-8")
+    req = urllib.request.Request(token_url, data=data, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            token_data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(json.dumps({"error": f"Token exchange failed: HTTP {e.code}", "detail": body[:300]}))
+        sys.exit(1)
+
+    access_token = token_data.get("access_token", "")
+    refresh_token = token_data.get("refresh_token", "")
+    expires_in = token_data.get("expires_in", 0)
+
+    if access_token:
+        print(json.dumps({
+            "status": "ok",
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "expires_in": expires_in,
+            "hint": f"Set: export FREESOUND_TOKEN={access_token}",
+        }, ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps({"error": "No access_token in response", "raw": token_data}))
+
+
 def cmd_download(args: argparse.Namespace) -> None:
     """Download a single asset from a URL."""
     url = args.url
@@ -1167,6 +1245,11 @@ Examples:
     p_search.add_argument("--color", help="Photo color filter (Pexels/Pixabay only)")
     p_search.add_argument("--format", choices=["json", "text"], default="json")
     p_search.set_defaults(func=cmd_search)
+
+    # auth
+    p_auth = sub.add_parser("auth", help="Run OAuth2 flow for a source")
+    p_auth.add_argument("source", help="Source name (e.g., freesound)")
+    p_auth.set_defaults(func=cmd_auth)
 
     # download
     p_dl = sub.add_parser("download", help="Download a single asset")
