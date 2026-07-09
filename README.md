@@ -1,5 +1,10 @@
 # Asset Seeker — Online Creative Asset Search
 
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-skill-6C3C97)](https://claude.ai/code)
+[![OpenClaw](https://img.shields.io/badge/OpenClaw-compatible-orange)](https://openclaw.ai)
+[![SkillsMP](https://img.shields.io/badge/SkillsMP-indexed-blue)](https://skillsmp.com)
+
 [中文文档](README_CN.md)
 
 Search free commercial-use creative assets across the internet — **photos, illustrations, icons, video footage, music, sound effects, and fonts** — from curated, license-vetted sources. Built for content creators who need high-quality assets without licensing headaches.
@@ -18,22 +23,30 @@ Search free commercial-use creative assets across the internet — **photos, ill
 
 ## Installation
 
-**Claude Code (global):**
+### Claude Code Marketplace (recommended)
 ```bash
-git clone https://github.com/Agents365-ai/assetSeeker.git ~/.claude/skills/assetSeeker
+/plugin install assetSeeker@365-skills
 ```
 
-**Claude Code (project only):**
+Or tell your coding agent:
+> help me to install https://github.com/Agents365-ai/assetSeeker.git
+
+### Manual
 ```bash
+# Global install
+git clone https://github.com/Agents365-ai/assetSeeker.git ~/.claude/skills/assetSeeker
+
+# Project-specific
 git clone https://github.com/Agents365-ai/assetSeeker.git .claude/skills/assetSeeker
 ```
 
-**OpenClaw:**
+### OpenClaw
 ```bash
 git clone https://github.com/Agents365-ai/assetSeeker.git skills/assetSeeker
 ```
 
-**SkillsMP:** Search `assetSeeker` on [skillsmp.com](https://skillsmp.com) for one-click install.
+### SkillsMP
+Search `assetSeeker` on [skillsmp.com](https://skillsmp.com) for one-click install.
 
 ## Requirements
 

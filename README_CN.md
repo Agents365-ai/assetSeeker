@@ -1,5 +1,10 @@
 # Asset Seeker — 在线创作素材搜索引擎
 
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-skill-6C3C97)](https://claude.ai/code)
+[![OpenClaw](https://img.shields.io/badge/OpenClaw-compatible-orange)](https://openclaw.ai)
+[![SkillsMP](https://img.shields.io/badge/SkillsMP-indexed-blue)](https://skillsmp.com)
+
 [English](README.md)
 
 跨多个平台搜索免费商用创作素材 — **图片、插画、图标、视频空镜、背景音乐、音效、字体** — 全部经过版权审核，标注授权协议和国内可访问性。专为内容创作者设计，让你专注于创作而非找素材和躲版权。
@@ -20,22 +25,30 @@
 
 ## 安装
 
-**Claude Code（全局）：**
+### Claude Code 插件市场（推荐）
 ```bash
-git clone https://github.com/Agents365-ai/assetSeeker.git ~/.claude/skills/assetSeeker
+/plugin install assetSeeker@365-skills
 ```
 
-**Claude Code（仅当前项目）：**
+或者告诉你的 coding agent：
+> help me to install https://github.com/Agents365-ai/assetSeeker.git
+
+### 手动安装
 ```bash
+# 全局安装
+git clone https://github.com/Agents365-ai/assetSeeker.git ~/.claude/skills/assetSeeker
+
+# 仅当前项目
 git clone https://github.com/Agents365-ai/assetSeeker.git .claude/skills/assetSeeker
 ```
 
-**OpenClaw：**
+### OpenClaw
 ```bash
 git clone https://github.com/Agents365-ai/assetSeeker.git skills/assetSeeker
 ```
 
-**SkillsMP：** 在 [skillsmp.com](https://skillsmp.com) 搜索 `assetSeeker`，一键安装。
+### SkillsMP
+在 [skillsmp.com](https://skillsmp.com) 搜索 `assetSeeker`，一键安装。
 
 ## 环境要求
 
